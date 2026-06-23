@@ -26,6 +26,9 @@ const BALL_RADIUS = 7;
 const CUP_RADIUS = 12;
 const MAX_DRAG = 155;
 const YARDS_PER_PIXEL = 0.58;
+const SURFACE_Y = 2.8;
+const GREEN_Y = 3.4;
+const BALL_WORLD_RADIUS = BALL_RADIUS * SCALE * 1.35;
 
 const CLUBS = [
   { id: "driver", label: "Driver", carry: 285, roll: 55, accuracy: 0.8, min: 145 },
@@ -122,6 +125,15 @@ function clamp(value, min, max) {
 
 function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function distancePointToSegment(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) return distance(point, start);
+  const t = clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0, 1);
+  return distance(point, { x: start.x + dx * t, y: start.y + dy * t });
 }
 
 function yardsBetween(a, b) {
@@ -305,10 +317,10 @@ function updateCamera() {
   if (cameraState.mode === "player" && ball) {
     const anchor = world(ball, 0);
     const direction = new THREE.Vector3(Math.sin(cameraState.yaw), 0, Math.cos(cameraState.yaw)).normalize();
-    const position = anchor.clone().addScaledVector(direction, -92);
-    position.y = 44;
-    const lookAt = anchor.clone().addScaledVector(direction, 190);
-    lookAt.y = 35 + cameraState.pitch * 260;
+    const position = anchor.clone().addScaledVector(direction, -116);
+    position.y = 34;
+    const lookAt = anchor.clone().addScaledVector(direction, 225);
+    lookAt.y = 18 + cameraState.pitch * 230;
     camera.position.copy(position);
     camera.lookAt(lookAt);
     return;
@@ -344,8 +356,8 @@ function setBirdView() {
   cameraState.mode = "bird";
   cameraState.target = { x: 60, z: 0 };
   cameraState.yaw = -0.38;
-  cameraState.pitch = 1.12;
-  cameraState.distance = 920;
+  cameraState.pitch = 1.04;
+  cameraState.distance = 820;
   cameraState.zoom = 1;
   resizeRenderer();
   viewModeButton.textContent = "Play";
@@ -365,32 +377,26 @@ function buildCourseScene() {
   courseGroup = new THREE.Group();
   scene.add(courseGroup);
 
-  const base = new THREE.Mesh(
-    new THREE.BoxGeometry(WIDTH * SCALE * 1.85, 22, HEIGHT * SCALE * 1.7),
-    createMaterial(0x294628, 0.94),
-  );
-  base.position.y = -24;
-  base.receiveShadow = true;
-  courseGroup.add(base);
-
   const roughPlane = new THREE.Mesh(
     new THREE.PlaneGeometry(WIDTH * SCALE * 2.2, HEIGHT * SCALE * 2),
     createMaterial(0x355c31, 0.96),
   );
   roughPlane.rotation.x = -Math.PI / 2;
-  roughPlane.position.y = -10;
+  roughPlane.position.y = 0;
   roughPlane.receiveShadow = true;
   courseGroup.add(roughPlane);
 
-  addPathLayer(course.fairwayWidth + 96, 0x2f5b2f, -4, 13);
-  addPathLayer(course.fairwayWidth + 52, 0x447939, 4, 13);
-  addPathLayer(course.fairwayWidth, 0x78b65c, 13, 14);
+  addPathLayer(course.fairwayWidth + 96, 0x2f5b2f, 0.8, 1.6);
+  addPathLayer(course.fairwayWidth + 52, 0x447939, 1.6, 1.8);
+  addPathLayer(course.fairwayWidth, 0x78b65c, SURFACE_Y, 2.2);
 
-  addEllipse(course.water, 0x2d83a1, 19, 4, 0.9);
-  course.bunkers.forEach((bunker) => addEllipse(bunker, 0xd8c078, 21, 5, 1));
-  addCylinder(course.tee, 22, 22, 0xd8c18a, 22);
-  addCylinder(course.pin, course.greenRadius, course.greenRadius, 0x61a94a, 23);
+  addFairwayMowingLines();
+  addEllipse(course.water, 0x2d83a1, 2.2, 1.2, 0.9);
+  course.bunkers.forEach((bunker) => addEllipse(bunker, 0xd8c078, 3.2, 1.2, 1));
+  addCylinder(course.tee, 22, 22, 0xd8c18a, 4.2, 1.4);
+  addCylinder(course.pin, course.greenRadius, course.greenRadius, 0x61a94a, GREEN_Y, 1.6);
   addTrees();
+  addRoughDetail();
   addCupAndPin();
   addBall();
   addAimHelpers();
@@ -411,9 +417,9 @@ function addPathLayer(width, color, y, height) {
   }
 }
 
-function addCylinder(point, rx, rz, color, y = 16) {
+function addCylinder(point, rx, rz, color, y = SURFACE_Y, height = 2) {
   const mesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(rx * SCALE, rx * SCALE, 10, 64),
+    new THREE.CylinderGeometry(rx * SCALE, rx * SCALE, height, 64),
     createMaterial(color, 0.86),
   );
   const pos = world(point, y);
@@ -423,6 +429,24 @@ function addCylinder(point, rx, rz, color, y = 16) {
   mesh.receiveShadow = true;
   courseGroup.add(mesh);
   return mesh;
+}
+
+function addFairwayMowingLines() {
+  const material = createMaterial(0x89c869, 0.92);
+  material.transparent = true;
+  material.opacity = 0.22;
+  for (let i = 0; i <= 18; i += 1) {
+    const t = i / 18;
+    const point = bezier(course.tee, course.control, course.pin, t);
+    const width = (course.fairwayWidth * SCALE) * (0.18 + (i % 2) * 0.08);
+    const line = new THREE.Mesh(new THREE.BoxGeometry(width, 0.45, 10), material);
+    const pos = world(point, SURFACE_Y + 2.2);
+    line.position.set(pos.x, pos.y, pos.z);
+    const next = bezier(course.tee, course.control, course.pin, Math.min(1, t + 0.03));
+    line.rotation.y = -Math.atan2(next.x - point.x, next.y - point.y) + Math.PI / 2;
+    line.receiveShadow = true;
+    courseGroup.add(line);
+  }
 }
 
 function addEllipse(ellipse, color, y, height, opacity = 1) {
@@ -442,12 +466,12 @@ function addEllipse(ellipse, color, y, height, opacity = 1) {
 
 function addCupAndPin() {
   const cup = new THREE.Mesh(new THREE.CylinderGeometry(9, 9, 3, 32), createMaterial(0x07090b, 0.75));
-  const cupPos = world(course.pin, 30);
-  cup.position.set(cupPos.x, 30, cupPos.z);
+  const cupPos = world(course.pin, GREEN_Y + 2);
+  cup.position.set(cupPos.x, GREEN_Y + 2, cupPos.z);
   courseGroup.add(cup);
 
   const pole = new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 78, 12), createMaterial(0xf4efe0, 0.48));
-  pole.position.set(cupPos.x, 70, cupPos.z);
+  pole.position.set(cupPos.x, GREEN_Y + 42, cupPos.z);
   pole.castShadow = true;
   courseGroup.add(pole);
 
@@ -457,7 +481,7 @@ function addCupAndPin() {
   flagShape.lineTo(0, 26);
   flagShape.lineTo(0, 0);
   const flag = new THREE.Mesh(new THREE.ShapeGeometry(flagShape), createMaterial(0xff5d42, 0.58));
-  flag.position.set(cupPos.x + 2, 100, cupPos.z);
+  flag.position.set(cupPos.x + 2, GREEN_Y + 72, cupPos.z);
   flag.rotation.y = -0.35;
   flag.castShadow = true;
   courseGroup.add(flag);
@@ -465,7 +489,7 @@ function addCupAndPin() {
 
 function addBall() {
   ballMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(BALL_RADIUS * SCALE * 1.35, 32, 24),
+    new THREE.SphereGeometry(BALL_WORLD_RADIUS, 32, 24),
     createMaterial(0xf9f8ec, 0.38),
   );
   ballMesh.castShadow = true;
@@ -490,7 +514,7 @@ function addAimHelpers() {
 
 function addTrees() {
   const rng = makeRng(`${course.key}:trees`);
-  for (let i = 0; i < 32; i += 1) {
+  for (let i = 0; i < 46; i += 1) {
     let point;
     for (let tries = 0; tries < 20; tries += 1) {
       point = { x: rand(rng, -80, WIDTH + 80), y: rand(rng, -80, HEIGHT + 80) };
@@ -518,6 +542,26 @@ function addTree(point, height, spread) {
   crown.castShadow = true;
   crown.receiveShadow = true;
   courseGroup.add(crown);
+}
+
+function addRoughDetail() {
+  const rng = makeRng(`${course.key}:rough`);
+  const material = createMaterial(0x426f34, 0.98);
+  material.transparent = true;
+  material.opacity = 0.55;
+  for (let i = 0; i < 90; i += 1) {
+    const point = { x: rand(rng, -60, WIDTH + 60), y: rand(rng, -50, HEIGHT + 50) };
+    if (fairwayDistance(point) < course.fairwayWidth * 0.72 || distance(point, course.pin) < course.greenRadius + 38) continue;
+    const grass = new THREE.Mesh(
+      new THREE.ConeGeometry(rand(rng, 2.4, 5.8), rand(rng, 8, 18), 5),
+      material,
+    );
+    const pos = world(point, rand(rng, 5, 9));
+    grass.position.set(pos.x, pos.y, pos.z);
+    grass.rotation.y = rand(rng, 0, Math.PI * 2);
+    grass.castShadow = true;
+    courseGroup.add(grass);
+  }
 }
 
 function createClubButtons() {
@@ -835,6 +879,7 @@ function stepPhysics() {
   const dy = target.y - ball.y;
   const remaining = Math.hypot(dx, dy);
   const speed = Math.max(Math.hypot(ball.vx, ball.vy) * 0.965, 0.12);
+  const previous = { x: ball.x, y: ball.y };
 
   if (remaining <= speed) {
     ball.x = target.x;
@@ -850,7 +895,10 @@ function stepPhysics() {
   ball.x += ball.vx;
   ball.y += ball.vy;
 
-  if (distance(ball, course.pin) < CUP_RADIUS && activeClub.id === "putter" && speed < 4.8) {
+  const crossedCup = distancePointToSegment(course.pin, previous, ball) <= CUP_RADIUS * 1.35;
+  const cupSpeedLimit = activeClub.id === "putter" ? 11.5 : 8.5;
+  const onGreenLine = distance(previous, course.pin) <= course.greenRadius * 1.35 || distance(ball, course.pin) <= course.greenRadius * 1.35;
+  if ((crossedCup || distance(ball, course.pin) <= CUP_RADIUS * 1.5) && speed <= cupSpeedLimit && onGreenLine) {
     ball.x = course.pin.x;
     ball.y = course.pin.y;
     ball.vx = 0;
@@ -871,14 +919,6 @@ function settleBall() {
     updateShotInfo();
     if (cameraState.mode === "player") setPlayerView();
     message.textContent = terrain === "water" ? "Water penalty. Dropped at your last lie." : "Out of bounds. One-stroke penalty.";
-    draw();
-    return;
-  }
-
-  if (distance(ball, course.pin) < CUP_RADIUS * 1.2 && activeClub.id !== "putter") {
-    ball.x = course.pin.x;
-    ball.y = course.pin.y;
-    finishHole();
     draw();
     return;
   }
@@ -908,10 +948,10 @@ function finishHole() {
 
 function ballHeight() {
   const terrain = terrainAt(ball);
-  if (terrain === "sand") return 32;
-  if (terrain === "green") return 38;
-  if (terrain === "fairway") return 34;
-  return 24;
+  if (terrain === "sand") return 6 + BALL_WORLD_RADIUS;
+  if (terrain === "green") return GREEN_Y + 2 + BALL_WORLD_RADIUS;
+  if (terrain === "fairway") return SURFACE_Y + 2 + BALL_WORLD_RADIUS;
+  return 2 + BALL_WORLD_RADIUS;
 }
 
 function updateBallMesh() {
