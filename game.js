@@ -1,0 +1,1034 @@
+const canvas = document.querySelector("#course");
+const dateLabel = document.querySelector("#dateLabel");
+const parLabel = document.querySelector("#parLabel");
+const strokeLabel = document.querySelector("#strokeLabel");
+const bestLabel = document.querySelector("#bestLabel");
+const powerMeter = document.querySelector("#powerMeter");
+const powerLabel = document.querySelector("#powerLabel");
+const message = document.querySelector("#message");
+const resetButton = document.querySelector("#resetButton");
+const newRoundButton = document.querySelector("#newRoundButton");
+const clubButtons = document.querySelector("#clubButtons");
+const distanceLabel = document.querySelector("#distanceLabel");
+const lieLabel = document.querySelector("#lieLabel");
+const windLabel = document.querySelector("#windLabel");
+const shareButton = document.querySelector("#shareButton");
+const introModal = document.querySelector("#introModal");
+const playButton = document.querySelector("#playButton");
+const helpButton = document.querySelector("#helpButton");
+const resetViewButton = document.querySelector("#resetViewButton");
+const viewModeButton = document.querySelector("#viewModeButton");
+
+const WIDTH = 960;
+const HEIGHT = 620;
+const SCALE = 0.82;
+const BALL_RADIUS = 7;
+const CUP_RADIUS = 12;
+const MAX_DRAG = 155;
+const YARDS_PER_PIXEL = 0.58;
+
+const CLUBS = [
+  { id: "driver", label: "Driver", carry: 285, roll: 55, accuracy: 0.8, min: 145 },
+  { id: "wood", label: "3 Wood", carry: 235, roll: 42, accuracy: 0.88, min: 115 },
+  { id: "iron", label: "Iron", carry: 175, roll: 26, accuracy: 0.98, min: 68 },
+  { id: "wedge", label: "Wedge", carry: 92, roll: 10, accuracy: 1.08, min: 18 },
+  { id: "putter", label: "Putter", carry: 28, roll: 42, accuracy: 1.35, min: 0 },
+];
+
+const memoryScores = new Map();
+let THREE;
+let renderer;
+let scene;
+let camera;
+let courseGroup;
+let ballMesh;
+let aimLine;
+let aimMarker;
+let course;
+let ball;
+let strokes = 0;
+let aiming = false;
+let aimPoint = null;
+let lastPlayablePosition = null;
+let holed = false;
+let animationId = null;
+let renderLoopId = null;
+let activeClub = CLUBS[0];
+let cameraState = {
+  mode: "player",
+  target: { x: 80, z: 0 },
+  yaw: 0,
+  pitch: 0.05,
+  distance: 820,
+  zoom: 1,
+};
+let navMode = null;
+let navStart = null;
+let shotStartClient = null;
+let shotStartBall = null;
+const activePointers = new Map();
+
+import("https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js")
+  .then((module) => {
+    THREE = module;
+    boot();
+  })
+  .catch(() => {
+    message.textContent = "Could not load the 3D engine. Check your connection and reload.";
+  });
+
+function boot() {
+  setupScene();
+  course = generateDailyCourse(todayKey());
+  createClubButtons();
+  buildCourseScene();
+  resetRound(true);
+  message.textContent = `Today's hole is ${course.holeYards} yards, par ${course.par}. Drag the course to look around.`;
+  bindEvents();
+  renderLoop();
+}
+
+function todayKey() {
+  const now = new Date();
+  return [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function makeRng(seedText) {
+  let seed = 2166136261;
+  for (let i = 0; i < seedText.length; i += 1) {
+    seed ^= seedText.charCodeAt(i);
+    seed = Math.imul(seed, 16777619);
+  }
+  return () => {
+    seed += 0x6d2b79f5;
+    let t = seed;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function rand(rng, min, max) {
+  return min + rng() * (max - min);
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function distance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function yardsBetween(a, b) {
+  return Math.round(distance(a, b) * YARDS_PER_PIXEL);
+}
+
+function bezier(a, b, c, t) {
+  const p = 1 - t;
+  return {
+    x: p * p * a.x + 2 * p * t * b.x + t * t * c.x,
+    y: p * p * a.y + 2 * p * t * b.y + t * t * c.y,
+  };
+}
+
+function generateDailyCourse(key) {
+  const rng = makeRng(key);
+  const tee = { x: rand(rng, 74, 116), y: rand(rng, 170, 450) };
+  const pin = { x: rand(rng, 835, 890), y: rand(rng, 125, 500) };
+  const curve = rand(rng, -185, 185);
+  const control = {
+    x: rand(rng, 420, 555),
+    y: clamp((tee.y + pin.y) / 2 + curve, 92, 528),
+  };
+  const holeYards = yardsBetween(tee, pin) + Math.round(Math.abs(curve) * 0.45);
+  const par = holeYards > 460 ? 5 : holeYards > 330 ? 4 : 3;
+  const fairwayWidth = rand(rng, 104, 136);
+  const greenRadius = rand(rng, 46, 62);
+  const windAngle = rand(rng, -Math.PI, Math.PI);
+  const wind = {
+    x: Math.cos(windAngle),
+    y: Math.sin(windAngle),
+    mph: Math.round(rand(rng, 4, 16)),
+  };
+
+  const bunkers = Array.from({ length: 4 + Math.floor(rng() * 2) }, (_, index) => {
+    const t = rand(rng, 0.32, 0.94);
+    const point = bezier(tee, control, pin, t);
+    const side = index % 2 === 0 ? 1 : -1;
+    return {
+      x: point.x + side * rand(rng, 50, 92),
+      y: point.y + rand(rng, -36, 36),
+      rx: rand(rng, 26, 50),
+      ry: rand(rng, 16, 30),
+      angle: rand(rng, -0.9, 0.9),
+    };
+  });
+
+  const waterPoint = bezier(tee, control, pin, rand(rng, 0.34, 0.72));
+  const water = {
+    x: waterPoint.x + rand(rng, -48, 48),
+    y: waterPoint.y + rand(rng, -86, 86),
+    rx: rand(rng, 58, 110),
+    ry: rand(rng, 34, 72),
+    angle: rand(rng, -0.45, 0.45),
+  };
+
+  return {
+    key,
+    tee,
+    pin,
+    control,
+    par,
+    holeYards,
+    fairwayWidth,
+    greenRadius,
+    bunkers,
+    water,
+    wind,
+  };
+}
+
+function pointInEllipse(point, ellipse) {
+  const cos = Math.cos(ellipse.angle);
+  const sin = Math.sin(ellipse.angle);
+  const dx = point.x - ellipse.x;
+  const dy = point.y - ellipse.y;
+  const x = dx * cos + dy * sin;
+  const y = -dx * sin + dy * cos;
+  return (x * x) / (ellipse.rx * ellipse.rx) + (y * y) / (ellipse.ry * ellipse.ry) <= 1;
+}
+
+function fairwayDistance(point) {
+  let best = Infinity;
+  for (let i = 0; i <= 96; i += 1) {
+    best = Math.min(best, distance(point, bezier(course.tee, course.control, course.pin, i / 96)));
+  }
+  return best;
+}
+
+function terrainAt(point) {
+  if (
+    point.x < BALL_RADIUS ||
+    point.x > WIDTH - BALL_RADIUS ||
+    point.y < BALL_RADIUS ||
+    point.y > HEIGHT - BALL_RADIUS
+  ) {
+    return "out";
+  }
+  if (pointInEllipse(point, course.water)) return "water";
+  if (course.bunkers.some((bunker) => pointInEllipse(point, bunker))) return "sand";
+  if (distance(point, course.pin) <= course.greenRadius) return "green";
+  return fairwayDistance(point) <= course.fairwayWidth / 2 ? "fairway" : "rough";
+}
+
+function lieName() {
+  if (strokes === 0 && distance(ball, course.tee) < 3) return "Tee";
+  const terrain = terrainAt(ball);
+  return terrain[0].toUpperCase() + terrain.slice(1);
+}
+
+function liePowerFactor() {
+  const terrain = terrainAt(ball);
+  if (terrain === "sand") return 0.52;
+  if (terrain === "rough") return 0.74;
+  if (terrain === "green") return 0.34;
+  return 1;
+}
+
+function loadScore(key) {
+  try {
+    return localStorage.getItem(key) || memoryScores.get(key) || null;
+  } catch {
+    return memoryScores.get(key) || null;
+  }
+}
+
+function saveScore(key, value) {
+  memoryScores.set(key, value);
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Some browsers block localStorage for local files. Session memory still works.
+  }
+}
+
+function setupScene() {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.setClearColor(0x8fbfda, 1);
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x8fbfda);
+  scene.fog = new THREE.Fog(0xb5d4df, 900, 1900);
+
+  camera = new THREE.PerspectiveCamera(58, 1, 1, 2600);
+  updateCamera();
+
+  const hemi = new THREE.HemisphereLight(0xe5f7ff, 0x5b6f3f, 1.9);
+  scene.add(hemi);
+
+  const sun = new THREE.DirectionalLight(0xfff5d2, 2.4);
+  sun.position.set(-260, 520, 240);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -600;
+  sun.shadow.camera.right = 600;
+  sun.shadow.camera.top = 500;
+  sun.shadow.camera.bottom = -500;
+  scene.add(sun);
+
+  const ambient = new THREE.AmbientLight(0xacc6a0, 1.05);
+  scene.add(ambient);
+
+  window.addEventListener("resize", resizeRenderer);
+  resizeRenderer();
+}
+
+function resizeRenderer() {
+  const rect = canvas.getBoundingClientRect();
+  renderer.setSize(rect.width, rect.height, false);
+  camera.aspect = rect.width / Math.max(rect.height, 1);
+  camera.zoom = cameraState.zoom;
+  camera.updateProjectionMatrix();
+  updateCamera();
+}
+
+function updateCamera() {
+  if (!camera) return;
+  if (cameraState.mode === "player" && ball) {
+    const anchor = world(ball, 0);
+    const direction = new THREE.Vector3(Math.sin(cameraState.yaw), 0, Math.cos(cameraState.yaw)).normalize();
+    const position = anchor.clone().addScaledVector(direction, -92);
+    position.y = 44;
+    const lookAt = anchor.clone().addScaledVector(direction, 190);
+    lookAt.y = 35 + cameraState.pitch * 260;
+    camera.position.copy(position);
+    camera.lookAt(lookAt);
+    return;
+  }
+
+  const target = new THREE.Vector3(cameraState.target.x, 0, cameraState.target.z);
+  const horizontal = cameraState.distance * Math.cos(cameraState.pitch);
+  camera.position.set(
+    target.x + Math.sin(cameraState.yaw) * horizontal,
+    cameraState.distance * Math.sin(cameraState.pitch),
+    target.z + Math.cos(cameraState.yaw) * horizontal,
+  );
+  camera.lookAt(target);
+}
+
+function angleFromTo(a, b) {
+  const aw = world(a, 0);
+  const bw = world(b, 0);
+  return Math.atan2(bw.x - aw.x, bw.z - aw.z);
+}
+
+function setPlayerView() {
+  cameraState.mode = "player";
+  cameraState.yaw = angleFromTo(ball || course.tee, course.pin);
+  cameraState.pitch = 0.04;
+  cameraState.zoom = 1;
+  resizeRenderer();
+  viewModeButton.textContent = "Bird";
+  viewModeButton.setAttribute("aria-label", "Bird view");
+}
+
+function setBirdView() {
+  cameraState.mode = "bird";
+  cameraState.target = { x: 60, z: 0 };
+  cameraState.yaw = -0.38;
+  cameraState.pitch = 1.12;
+  cameraState.distance = 920;
+  cameraState.zoom = 1;
+  resizeRenderer();
+  viewModeButton.textContent = "Play";
+  viewModeButton.setAttribute("aria-label", "Player view");
+}
+
+function world(point, y = 0) {
+  return new THREE.Vector3((point.x - WIDTH / 2) * SCALE, y, (point.y - HEIGHT / 2) * SCALE);
+}
+
+function createMaterial(color, roughness = 0.82, metalness = 0) {
+  return new THREE.MeshStandardMaterial({ color, roughness, metalness });
+}
+
+function buildCourseScene() {
+  if (courseGroup) scene.remove(courseGroup);
+  courseGroup = new THREE.Group();
+  scene.add(courseGroup);
+
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(WIDTH * SCALE * 1.85, 22, HEIGHT * SCALE * 1.7),
+    createMaterial(0x294628, 0.94),
+  );
+  base.position.y = -24;
+  base.receiveShadow = true;
+  courseGroup.add(base);
+
+  const roughPlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(WIDTH * SCALE * 2.2, HEIGHT * SCALE * 2),
+    createMaterial(0x355c31, 0.96),
+  );
+  roughPlane.rotation.x = -Math.PI / 2;
+  roughPlane.position.y = -10;
+  roughPlane.receiveShadow = true;
+  courseGroup.add(roughPlane);
+
+  addPathLayer(course.fairwayWidth + 96, 0x2f5b2f, -4, 13);
+  addPathLayer(course.fairwayWidth + 52, 0x447939, 4, 13);
+  addPathLayer(course.fairwayWidth, 0x78b65c, 13, 14);
+
+  addEllipse(course.water, 0x2d83a1, 19, 4, 0.9);
+  course.bunkers.forEach((bunker) => addEllipse(bunker, 0xd8c078, 21, 5, 1));
+  addCylinder(course.tee, 22, 22, 0xd8c18a, 22);
+  addCylinder(course.pin, course.greenRadius, course.greenRadius, 0x61a94a, 23);
+  addTrees();
+  addCupAndPin();
+  addBall();
+  addAimHelpers();
+}
+
+function addPathLayer(width, color, y, height) {
+  const material = createMaterial(color, 0.88);
+  const steps = 42;
+  const radius = (width * SCALE) / 2;
+  for (let i = 0; i <= steps; i += 1) {
+    const point = bezier(course.tee, course.control, course.pin, i / steps);
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, height, 38), material);
+    const pos = world(point, y);
+    mesh.position.set(pos.x, y, pos.z);
+    mesh.receiveShadow = true;
+    mesh.castShadow = true;
+    courseGroup.add(mesh);
+  }
+}
+
+function addCylinder(point, rx, rz, color, y = 16) {
+  const mesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(rx * SCALE, rx * SCALE, 10, 64),
+    createMaterial(color, 0.86),
+  );
+  const pos = world(point, y);
+  mesh.position.set(pos.x, y, pos.z);
+  mesh.scale.z = rz / rx;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  courseGroup.add(mesh);
+  return mesh;
+}
+
+function addEllipse(ellipse, color, y, height, opacity = 1) {
+  const material = createMaterial(color, 0.78);
+  material.transparent = opacity < 1;
+  material.opacity = opacity;
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(ellipse.rx * SCALE, ellipse.rx * SCALE, height, 64), material);
+  const pos = world(ellipse, y);
+  mesh.position.set(pos.x, y, pos.z);
+  mesh.scale.z = ellipse.ry / ellipse.rx;
+  mesh.rotation.y = -ellipse.angle;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  courseGroup.add(mesh);
+  return mesh;
+}
+
+function addCupAndPin() {
+  const cup = new THREE.Mesh(new THREE.CylinderGeometry(9, 9, 3, 32), createMaterial(0x07090b, 0.75));
+  const cupPos = world(course.pin, 30);
+  cup.position.set(cupPos.x, 30, cupPos.z);
+  courseGroup.add(cup);
+
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 78, 12), createMaterial(0xf4efe0, 0.48));
+  pole.position.set(cupPos.x, 70, cupPos.z);
+  pole.castShadow = true;
+  courseGroup.add(pole);
+
+  const flagShape = new THREE.Shape();
+  flagShape.moveTo(0, 0);
+  flagShape.lineTo(42, 13);
+  flagShape.lineTo(0, 26);
+  flagShape.lineTo(0, 0);
+  const flag = new THREE.Mesh(new THREE.ShapeGeometry(flagShape), createMaterial(0xff5d42, 0.58));
+  flag.position.set(cupPos.x + 2, 100, cupPos.z);
+  flag.rotation.y = -0.35;
+  flag.castShadow = true;
+  courseGroup.add(flag);
+}
+
+function addBall() {
+  ballMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(BALL_RADIUS * SCALE * 1.35, 32, 24),
+    createMaterial(0xf9f8ec, 0.38),
+  );
+  ballMesh.castShadow = true;
+  courseGroup.add(ballMesh);
+}
+
+function addAimHelpers() {
+  const material = new THREE.LineDashedMaterial({ color: 0x9af0b7, dashSize: 14, gapSize: 9, linewidth: 2 });
+  const geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+  aimLine = new THREE.Line(geometry, material);
+  aimLine.visible = false;
+  courseGroup.add(aimLine);
+
+  aimMarker = new THREE.Mesh(
+    new THREE.TorusGeometry(17, 2.6, 12, 32),
+    new THREE.MeshBasicMaterial({ color: 0x8bf2ad, transparent: true, opacity: 0.9 }),
+  );
+  aimMarker.rotation.x = Math.PI / 2;
+  aimMarker.visible = false;
+  courseGroup.add(aimMarker);
+}
+
+function addTrees() {
+  const rng = makeRng(`${course.key}:trees`);
+  for (let i = 0; i < 32; i += 1) {
+    let point;
+    for (let tries = 0; tries < 20; tries += 1) {
+      point = { x: rand(rng, -80, WIDTH + 80), y: rand(rng, -80, HEIGHT + 80) };
+      if (fairwayDistance(point) > course.fairwayWidth * 0.9 && distance(point, course.pin) > course.greenRadius + 55) break;
+    }
+    addTree(point, rand(rng, 32, 58), rand(rng, 0.8, 1.35));
+  }
+}
+
+function addTree(point, height, spread) {
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(4 * spread, 6 * spread, height, 8),
+    createMaterial(0x65402a, 0.8),
+  );
+  const pos = world(point, height / 2 - 5);
+  trunk.position.set(pos.x, pos.y, pos.z);
+  trunk.castShadow = true;
+  courseGroup.add(trunk);
+
+  const crown = new THREE.Mesh(
+    new THREE.ConeGeometry(22 * spread, 54 * spread, 10),
+    createMaterial(0x1d5632, 0.92),
+  );
+  crown.position.set(pos.x, height + 18 * spread, pos.z);
+  crown.castShadow = true;
+  crown.receiveShadow = true;
+  courseGroup.add(crown);
+}
+
+function createClubButtons() {
+  clubButtons.innerHTML = "";
+  CLUBS.forEach((club) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = club.label;
+    button.dataset.club = club.id;
+    button.setAttribute("aria-pressed", club.id === activeClub.id ? "true" : "false");
+    button.addEventListener("click", () => {
+      if (ballIsMoving() || holed) return;
+      activeClub = club;
+      updateClubButtons();
+      updateShotInfo();
+      draw();
+    });
+    clubButtons.append(button);
+  });
+}
+
+function updateClubButtons() {
+  clubButtons.querySelectorAll("button").forEach((button) => {
+    button.setAttribute("aria-pressed", button.dataset.club === activeClub.id ? "true" : "false");
+  });
+}
+
+function suggestClub() {
+  const yards = yardsBetween(ball, course.pin);
+  const onGreen = terrainAt(ball) === "green";
+  const options = [...CLUBS].reverse();
+  const next = onGreen
+    ? CLUBS.find((club) => club.id === "putter")
+    : options.find((club) => yards >= club.min && yards <= club.carry + club.roll + 30) || CLUBS[0];
+  activeClub = next;
+  updateClubButtons();
+}
+
+function updateStats() {
+  dateLabel.textContent = course.key;
+  parLabel.textContent = String(course.par);
+  strokeLabel.textContent = String(strokes);
+  bestLabel.textContent = loadScore(`daily-golf-best:${course.key}`) || "--";
+}
+
+function updatePower(value) {
+  const rounded = Math.round(value);
+  powerMeter.value = rounded;
+  powerLabel.textContent = `${rounded}%`;
+}
+
+function updateShotInfo() {
+  distanceLabel.textContent = `${yardsBetween(ball, course.pin)} yd`;
+  lieLabel.textContent = lieName();
+  windLabel.textContent = `${course.wind.mph} mph ${windArrow()}`;
+}
+
+function windArrow() {
+  const angle = Math.atan2(course.wind.y, course.wind.x);
+  const directions = ["E", "SE", "S", "SW", "W", "NW", "N", "NE"];
+  const index = Math.round(((angle + Math.PI * 2) % (Math.PI * 2)) / (Math.PI / 4)) % 8;
+  return directions[index];
+}
+
+function resetRound(keepMessage = false) {
+  ball = { x: course.tee.x, y: course.tee.y, vx: 0, vy: 0, target: null };
+  lastPlayablePosition = { x: ball.x, y: ball.y };
+  strokes = 0;
+  holed = false;
+  aiming = false;
+  aimPoint = null;
+  activeClub = CLUBS[0];
+  updateStats();
+  updatePower(0);
+  updateClubButtons();
+  updateShotInfo();
+  setPlayerView();
+  if (!keepMessage) message.textContent = "Drag from the ball to shoot. Drag elsewhere to look around.";
+  draw();
+}
+
+function screenPoint(event) {
+  return { x: event.clientX, y: event.clientY };
+}
+
+function ballScreenPoint() {
+  if (!ballMesh) return null;
+  const rect = canvas.getBoundingClientRect();
+  const projected = ballMesh.position.clone().project(camera);
+  return {
+    x: rect.left + ((projected.x + 1) / 2) * rect.width,
+    y: rect.top + ((1 - projected.y) / 2) * rect.height,
+  };
+}
+
+function isNearVisibleBall(point) {
+  const ballPoint = ballScreenPoint();
+  if (!ballPoint) return false;
+  return pointerDistance(point, ballPoint) <= 74;
+}
+
+function aimPointFromScreen(point) {
+  const pull = {
+    x: shotStartClient.x - point.x,
+    y: shotStartClient.y - point.y,
+  };
+  const drag = Math.max(pointerDistance(shotStartClient, point), 1);
+  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  right.y = 0;
+  right.normalize();
+
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
+  forward.y = 0;
+  forward.normalize();
+
+  const direction = right.multiplyScalar(pull.x).add(forward.multiplyScalar(-pull.y));
+  if (direction.lengthSq() < 0.001) {
+    return { ...shotStartBall };
+  }
+  direction.normalize();
+  const distancePixels = Math.min(drag, MAX_DRAG) / MAX_DRAG * 170;
+  const startWorld = world(shotStartBall, 0);
+  const targetWorld = startWorld.addScaledVector(direction, distancePixels * SCALE);
+  return {
+    x: targetWorld.x / SCALE + WIDTH / 2,
+    y: targetWorld.z / SCALE + HEIGHT / 2,
+  };
+}
+
+function clientPoint(event) {
+  return { x: event.clientX, y: event.clientY };
+}
+
+function pointerDistance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function averagePointer() {
+  const points = [...activePointers.values()];
+  return {
+    x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+    y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+  };
+}
+
+function pinchDistance() {
+  const points = [...activePointers.values()];
+  return points.length >= 2 ? pointerDistance(points[0], points[1]) : 0;
+}
+
+function startNavigation(event) {
+  navMode = activePointers.size >= 2 ? "pinch" : "orbit";
+  navStart = {
+    pointer: activePointers.size >= 2 ? averagePointer() : clientPoint(event),
+    mode: cameraState.mode,
+    yaw: cameraState.yaw,
+    pitch: cameraState.pitch,
+    target: { ...cameraState.target },
+    zoom: cameraState.zoom,
+    pinch: pinchDistance(),
+  };
+}
+
+function moveNavigation(event) {
+  if (!navMode || !navStart) return;
+
+  if (navMode === "pinch" && activePointers.size >= 2) {
+    const center = averagePointer();
+    const dx = center.x - navStart.pointer.x;
+    const dy = center.y - navStart.pointer.y;
+    const ratio = pinchDistance() / Math.max(navStart.pinch, 1);
+    cameraState.zoom = clamp(navStart.zoom * ratio, 0.72, 2.25);
+    cameraState.target.x = clamp(navStart.target.x - dx * 0.7 / cameraState.zoom, -430, 430);
+    cameraState.target.z = clamp(navStart.target.z - dy * 0.7 / cameraState.zoom, -300, 300);
+    resizeRenderer();
+    message.textContent = "Pinch to zoom. Drag to look around.";
+    return;
+  }
+
+  const point = clientPoint(event);
+  const dx = point.x - navStart.pointer.x;
+  const dy = point.y - navStart.pointer.y;
+  if (navStart.mode === "player") {
+    cameraState.yaw = navStart.yaw - dx * 0.006;
+    cameraState.pitch = clamp(navStart.pitch + dy * 0.0016, -0.08, 0.24);
+    updateCamera();
+    message.textContent = "Looking around from the ball. Drag near the ball to shoot.";
+    return;
+  }
+
+  const orbiting = event.shiftKey || event.altKey || Math.abs(dx) > Math.abs(dy) * 1.15;
+
+  if (orbiting) {
+    cameraState.yaw = navStart.yaw - dx * 0.008;
+    cameraState.pitch = clamp(navStart.pitch + dy * 0.004, 0.52, 1.12);
+  } else {
+    cameraState.target.x = clamp(navStart.target.x - dx * 0.78 / cameraState.zoom, -430, 430);
+    cameraState.target.z = clamp(navStart.target.z - dy * 0.78 / cameraState.zoom, -300, 300);
+  }
+  updateCamera();
+  message.textContent = "Drag from the ball to shoot. Drag elsewhere to look around.";
+}
+
+function zoomCamera(delta) {
+  cameraState.zoom = clamp(cameraState.zoom * (delta > 0 ? 0.9 : 1.1), 0.72, 2.25);
+  resizeRenderer();
+  message.textContent = "Scroll to zoom. Drag the course to change angle.";
+}
+
+function ballIsMoving() {
+  return Math.hypot(ball.vx, ball.vy) > 0.1;
+}
+
+function startAim(event) {
+  if (holed || ballIsMoving()) return;
+  const point = screenPoint(event);
+  activePointers.set(event.pointerId, point);
+  if (activePointers.size >= 2) {
+    aiming = false;
+    startNavigation(event);
+    return;
+  }
+  if (!isNearVisibleBall(point)) {
+    startNavigation(event);
+    canvas.setPointerCapture(event.pointerId);
+    return;
+  }
+  aiming = true;
+  navMode = null;
+  shotStartClient = point;
+  shotStartBall = { x: ball.x, y: ball.y };
+  aimPoint = aimPointFromScreen(point);
+  canvas.setPointerCapture(event.pointerId);
+  message.textContent = "Pull back from the ball, then release.";
+}
+
+function moveAim(event) {
+  const point = screenPoint(event);
+  activePointers.set(event.pointerId, point);
+  if (navMode) {
+    moveNavigation(event);
+    return;
+  }
+  if (!aiming) return;
+  aimPoint = aimPointFromScreen(point);
+  updatePower(clamp(pointerDistance(shotStartClient, point) / MAX_DRAG, 0, 1) * 100);
+  draw();
+}
+
+function releaseAim(event) {
+  const point = screenPoint(event);
+  activePointers.delete(event.pointerId);
+  if (navMode) {
+    if (activePointers.size === 0) {
+      navMode = null;
+      navStart = null;
+    } else {
+      startNavigation(event);
+    }
+    return;
+  }
+  if (!aiming) return;
+  aiming = false;
+  aimPoint = aimPointFromScreen(point);
+  const drag = Math.min(pointerDistance(shotStartClient, point), MAX_DRAG);
+  if (drag > 8) playShot(drag / MAX_DRAG);
+  shotStartClient = null;
+  shotStartBall = null;
+  updatePower(0);
+  draw();
+}
+
+function playShot(power) {
+  const aimAngle = Math.atan2(aimPoint.y - ball.y, aimPoint.x - ball.x);
+  const lieFactor = liePowerFactor();
+  const windPush = activeClub.id === "putter" ? 0 : course.wind.mph * 0.9;
+  const carryPixels = (activeClub.carry * power * lieFactor) / YARDS_PER_PIXEL;
+  const rollPixels = (activeClub.roll * (0.55 + power * 0.45) * lieFactor) / YARDS_PER_PIXEL;
+  const miss = (1 - activeClub.accuracy) * 34 + (1 - power) * 18;
+  const drift = {
+    x: course.wind.x * windPush + Math.sin(aimAngle) * miss,
+    y: course.wind.y * windPush - Math.cos(aimAngle) * miss,
+  };
+  const total = carryPixels + rollPixels;
+  ball.target = {
+    x: clamp(ball.x + Math.cos(aimAngle) * total + drift.x, -32, WIDTH + 32),
+    y: clamp(ball.y + Math.sin(aimAngle) * total + drift.y, -32, HEIGHT + 32),
+  };
+  const speed = activeClub.id === "putter" ? 10 : 18;
+  ball.vx = Math.cos(aimAngle) * speed;
+  ball.vy = Math.sin(aimAngle) * speed;
+  strokes += 1;
+  updateStats();
+  message.textContent = `${activeClub.label} away.`;
+  tick();
+}
+
+function tick() {
+  cancelAnimationFrame(animationId);
+  animationId = requestAnimationFrame(() => {
+    stepPhysics();
+    draw();
+    if (ballIsMoving()) {
+      tick();
+      return;
+    }
+    settleBall();
+  });
+}
+
+function stepPhysics() {
+  const target = ball.target || ball;
+  const dx = target.x - ball.x;
+  const dy = target.y - ball.y;
+  const remaining = Math.hypot(dx, dy);
+  const speed = Math.max(Math.hypot(ball.vx, ball.vy) * 0.965, 0.12);
+
+  if (remaining <= speed) {
+    ball.x = target.x;
+    ball.y = target.y;
+    ball.vx = 0;
+    ball.vy = 0;
+    ball.target = null;
+    return;
+  }
+
+  ball.vx = (dx / remaining) * speed;
+  ball.vy = (dy / remaining) * speed;
+  ball.x += ball.vx;
+  ball.y += ball.vy;
+
+  if (distance(ball, course.pin) < CUP_RADIUS && activeClub.id === "putter" && speed < 4.8) {
+    ball.x = course.pin.x;
+    ball.y = course.pin.y;
+    ball.vx = 0;
+    ball.vy = 0;
+    ball.target = null;
+    finishHole();
+  }
+}
+
+function settleBall() {
+  if (holed) return;
+  const terrain = terrainAt(ball);
+  if (terrain === "water" || terrain === "out") {
+    ball.x = lastPlayablePosition.x;
+    ball.y = lastPlayablePosition.y;
+    strokes += 1;
+    updateStats();
+    updateShotInfo();
+    if (cameraState.mode === "player") setPlayerView();
+    message.textContent = terrain === "water" ? "Water penalty. Dropped at your last lie." : "Out of bounds. One-stroke penalty.";
+    draw();
+    return;
+  }
+
+  if (distance(ball, course.pin) < CUP_RADIUS * 1.2 && activeClub.id !== "putter") {
+    ball.x = course.pin.x;
+    ball.y = course.pin.y;
+    finishHole();
+    draw();
+    return;
+  }
+
+  lastPlayablePosition = { x: ball.x, y: ball.y };
+  suggestClub();
+  updateShotInfo();
+  if (cameraState.mode === "player") setPlayerView();
+  const lie = lieName().toLowerCase();
+  message.textContent = lie === "green" ? "On the green. Time to putt." : `Ball came to rest in the ${lie}.`;
+}
+
+function finishHole() {
+  if (holed) return;
+  holed = true;
+  const key = `daily-golf-best:${course.key}`;
+  const best = Number(loadScore(key));
+  if (!best || strokes < best) {
+    saveScore(key, String(strokes));
+    message.textContent = `Holed in ${strokes}. New daily best.`;
+  } else {
+    message.textContent = `Holed in ${strokes}. Daily best: ${best}.`;
+  }
+  updateStats();
+  updateShotInfo();
+}
+
+function ballHeight() {
+  const terrain = terrainAt(ball);
+  if (terrain === "sand") return 32;
+  if (terrain === "green") return 38;
+  if (terrain === "fairway") return 34;
+  return 24;
+}
+
+function updateBallMesh() {
+  const pos = world(ball, ballHeight());
+  ballMesh.position.set(pos.x, pos.y, pos.z);
+  ballMesh.rotation.x += ball.vy * 0.03;
+  ballMesh.rotation.z -= ball.vx * 0.03;
+}
+
+function updateAimHelpers() {
+  if (!aiming || !aimPoint) {
+    aimLine.visible = false;
+    aimMarker.visible = false;
+    return;
+  }
+
+  const drag = Math.min(distance(ball, aimPoint), MAX_DRAG);
+  const angle = Math.atan2(aimPoint.y - ball.y, aimPoint.x - ball.x);
+  const projectedYards = Math.round((activeClub.carry + activeClub.roll) * (drag / MAX_DRAG) * liePowerFactor());
+  const target = {
+    x: ball.x + Math.cos(angle) * (projectedYards / YARDS_PER_PIXEL),
+    y: ball.y + Math.sin(angle) * (projectedYards / YARDS_PER_PIXEL),
+  };
+  const start = world(ball, 46);
+  const end = world(target, 46);
+  aimLine.geometry.setFromPoints([start, end]);
+  aimLine.computeLineDistances();
+  aimLine.visible = true;
+  aimMarker.position.set(end.x, end.y - 8, end.z);
+  aimMarker.visible = true;
+}
+
+function draw() {
+  updateBallMesh();
+  updateAimHelpers();
+  renderer.render(scene, camera);
+}
+
+function renderLoop() {
+  renderLoopId = requestAnimationFrame(renderLoop);
+  draw();
+}
+
+function bindEvents() {
+  canvas.addEventListener("pointerdown", startAim);
+  canvas.addEventListener("pointermove", moveAim);
+  canvas.addEventListener("pointerup", releaseAim);
+  canvas.addEventListener("pointerleave", releaseAim);
+  canvas.addEventListener("pointercancel", () => {
+    aiming = false;
+    navMode = null;
+    navStart = null;
+    activePointers.clear();
+    updatePower(0);
+    draw();
+  });
+  canvas.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+      zoomCamera(event.deltaY);
+    },
+    { passive: false },
+  );
+
+  resetButton.addEventListener("click", () => {
+    if (ballIsMoving() || holed) return;
+    ball.x = lastPlayablePosition.x;
+    ball.y = lastPlayablePosition.y;
+    ball.vx = 0;
+    ball.vy = 0;
+    ball.target = null;
+    suggestClub();
+    updateShotInfo();
+    message.textContent = "Returned to your last lie.";
+    draw();
+  });
+
+  newRoundButton.addEventListener("click", () => resetRound());
+
+  shareButton.addEventListener("click", async () => {
+    const relation = strokes - course.par;
+    const scoreText = relation === 0 ? "E" : relation > 0 ? `+${relation}` : String(relation);
+    const result = holed ? `${strokes} strokes (${scoreText})` : `${strokes} strokes so far`;
+    const text = `Daily Golf ${course.key}: ${result} on a ${course.holeYards} yd par ${course.par}.`;
+    try {
+      await navigator.clipboard.writeText(text);
+      message.textContent = "Result copied. Send it to a friend.";
+    } catch {
+      message.textContent = text;
+    }
+  });
+
+  playButton.addEventListener("click", () => {
+    introModal.hidden = true;
+  });
+
+  introModal.addEventListener("click", (event) => {
+    if (event.target === playButton) introModal.hidden = true;
+  });
+
+  helpButton.addEventListener("click", () => {
+    introModal.hidden = false;
+  });
+
+  viewModeButton.addEventListener("click", () => {
+    if (cameraState.mode === "player") {
+      setBirdView();
+      message.textContent = "Bird view. Drag to navigate the hole; scroll or pinch to zoom.";
+    } else {
+      setPlayerView();
+      message.textContent = "Player view. Drag near the ball to shoot.";
+    }
+  });
+
+  resetViewButton.addEventListener("click", () => {
+    setPlayerView();
+    message.textContent = "View reset behind the ball.";
+  });
+}
