@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Daily Golf</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="game-screen">
+      <canvas id="course" width="960" height="620" aria-label="Playable daily golf hole"></canvas>
+
+      <header class="top-hud" aria-label="Daily hole details">
+        <div class="brand-lockup">
+          <button class="icon-button" type="button" aria-label="Home">⌂</button>
+          <div>
+            <h1>daily.golf</h1>
+            <p>Full Hole Road</p>
+            <span>by Codex</span>
+          </div>
+        </div>
+
+        <div class="hud-actions">
+          <div class="score-pill" aria-live="polite">
+            <strong id="strokeLabel">0</strong>
+            <span>/ par <b id="parLabel">--</b></span>
+          </div>
+          <button id="helpButton" class="icon-button" type="button" aria-label="How to play">?</button>
+          <button id="viewModeButton" class="icon-button wide-icon" type="button" aria-label="Bird view">Bird</button>
+          <button id="resetViewButton" class="icon-button" type="button" aria-label="Reset view">↻</button>
+        </div>
+      </header>
+
+      <section class="daily-strip" aria-label="Daily stats">
+        <span id="dateLabel">--</span>
+        <span id="distanceLabel">-- yd</span>
+        <span id="lieLabel">Tee</span>
+        <span id="windLabel">--</span>
+        <span>Best <b id="bestLabel">--</b></span>
+      </section>
+
+      <section class="bottom-hud" aria-label="Controls">
+        <div id="message" class="message" role="status">Drag back from the ball to hit.</div>
+        <div class="control-tray">
+          <div class="club-picker" aria-label="Club selection">
+            <div id="clubButtons" class="club-buttons"></div>
+          </div>
+          <div class="club-readout">
+            <meter id="powerMeter" min="0" max="100" value="0"></meter>
+            <strong id="powerLabel">0%</strong>
+          </div>
+          <div class="actions">
+            <button id="resetButton" type="button">Return to Lie</button>
+            <button id="newRoundButton" type="button">Restart Today</button>
+            <button id="shareButton" type="button">Share Result</button>
+          </div>
+        </div>
+      </section>
+
+      <div id="introModal" class="modal-backdrop">
+        <section class="how-card" aria-label="How to play">
+          <h2>How to play</h2>
+          <p>Grab near the ball, drag back, let go. Pull further to hit harder.</p>
+          <p>Drag anywhere else to look around. Use Bird view to navigate the whole hole from above.</p>
+          <p>Choose a club for full shots. Wind moves the ball in the air.</p>
+          <p>Rough and sand reduce power. Water and out of bounds send you back with a penalty.</p>
+          <p>One new full hole every day. Your first finish counts.</p>
+          <button id="playButton" type="button">Play</button>
+        </section>
+      </div>
+    </main>
+
+    <script type="module" src="game.js"></script>
+  </body>
+</html>
