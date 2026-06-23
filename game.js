@@ -28,7 +28,7 @@ const MAX_DRAG = 155;
 const YARDS_PER_PIXEL = 0.58;
 const SURFACE_Y = 2.8;
 const GREEN_Y = 3.4;
-const BALL_WORLD_RADIUS = BALL_RADIUS * SCALE * 1.35;
+const BALL_WORLD_RADIUS = 2.3;
 
 const CLUBS = [
   { id: "driver", label: "Driver", carry: 285, roll: 55, accuracy: 0.8, min: 145 },
@@ -47,6 +47,7 @@ let courseGroup;
 let ballMesh;
 let aimLine;
 let aimMarker;
+let waterMeshes = [];
 let course;
 let ball;
 let strokes = 0;
@@ -280,14 +281,14 @@ function setupScene() {
   scene.background = new THREE.Color(0x8fbfda);
   scene.fog = new THREE.Fog(0xb5d4df, 900, 1900);
 
-  camera = new THREE.PerspectiveCamera(58, 1, 1, 2600);
+  camera = new THREE.PerspectiveCamera(44, 1, 1, 2600);
   updateCamera();
 
   const hemi = new THREE.HemisphereLight(0xe5f7ff, 0x5b6f3f, 1.9);
   scene.add(hemi);
 
-  const sun = new THREE.DirectionalLight(0xfff5d2, 2.4);
-  sun.position.set(-260, 520, 240);
+  const sun = new THREE.DirectionalLight(0xfff1c8, 2.8);
+  sun.position.set(-380, 560, 290);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   sun.shadow.camera.left = -600;
@@ -317,10 +318,10 @@ function updateCamera() {
   if (cameraState.mode === "player" && ball) {
     const anchor = world(ball, 0);
     const direction = new THREE.Vector3(Math.sin(cameraState.yaw), 0, Math.cos(cameraState.yaw)).normalize();
-    const position = anchor.clone().addScaledVector(direction, -116);
-    position.y = 34;
-    const lookAt = anchor.clone().addScaledVector(direction, 225);
-    lookAt.y = 18 + cameraState.pitch * 230;
+    const position = anchor.clone().addScaledVector(direction, -154);
+    position.y = 48;
+    const lookAt = anchor.clone().addScaledVector(direction, 310);
+    lookAt.y = 18 + cameraState.pitch * 215;
     camera.position.copy(position);
     camera.lookAt(lookAt);
     return;
@@ -374,6 +375,7 @@ function createMaterial(color, roughness = 0.82, metalness = 0) {
 
 function buildCourseScene() {
   if (courseGroup) scene.remove(courseGroup);
+  waterMeshes = [];
   courseGroup = new THREE.Group();
   scene.add(courseGroup);
 
@@ -391,8 +393,8 @@ function buildCourseScene() {
   addPathLayer(course.fairwayWidth, 0x78b65c, SURFACE_Y, 2.2);
 
   addFairwayMowingLines();
-  addEllipse(course.water, 0x2d83a1, 2.2, 1.2, 0.9);
-  course.bunkers.forEach((bunker) => addEllipse(bunker, 0xd8c078, 3.2, 1.2, 1));
+  addWater(course.water);
+  course.bunkers.forEach((bunker) => addBunker(bunker));
   addCylinder(course.tee, 22, 22, 0xd8c18a, 4.2, 1.4);
   addCylinder(course.pin, course.greenRadius, course.greenRadius, 0x61a94a, GREEN_Y, 1.6);
   addTrees();
@@ -462,6 +464,91 @@ function addEllipse(ellipse, color, y, height, opacity = 1) {
   mesh.receiveShadow = true;
   courseGroup.add(mesh);
   return mesh;
+}
+
+function addBunker(ellipse) {
+  const lipMaterial = createMaterial(0x4d7835, 0.95);
+  const lip = new THREE.Mesh(new THREE.TorusGeometry(ellipse.rx * SCALE * 0.96, 3.4, 10, 72), lipMaterial);
+  const pos = world(ellipse, SURFACE_Y + 1.5);
+  lip.position.set(pos.x, pos.y, pos.z);
+  lip.rotation.x = Math.PI / 2;
+  lip.rotation.z = -ellipse.angle;
+  lip.scale.y = ellipse.ry / ellipse.rx;
+  lip.castShadow = true;
+  lip.receiveShadow = true;
+  courseGroup.add(lip);
+
+  const shadow = new THREE.Mesh(
+    new THREE.CylinderGeometry(ellipse.rx * SCALE * 0.88, ellipse.rx * SCALE * 0.88, 2.2, 64),
+    createMaterial(0x8a6b3f, 0.98),
+  );
+  const shadowPos = world(ellipse, SURFACE_Y - 0.6);
+  shadow.position.set(shadowPos.x, shadowPos.y, shadowPos.z);
+  shadow.scale.z = ellipse.ry / ellipse.rx;
+  shadow.rotation.y = -ellipse.angle;
+  shadow.receiveShadow = true;
+  courseGroup.add(shadow);
+
+  const sandMaterial = createMaterial(0xd9c27d, 0.99);
+  const sand = new THREE.Mesh(
+    new THREE.CylinderGeometry(ellipse.rx * SCALE * 0.76, ellipse.rx * SCALE * 0.76, 0.9, 64),
+    sandMaterial,
+  );
+  const sandPos = world(ellipse, SURFACE_Y - 1.4);
+  sand.position.set(sandPos.x, sandPos.y, sandPos.z);
+  sand.scale.z = ellipse.ry / ellipse.rx;
+  sand.rotation.y = -ellipse.angle;
+  sand.receiveShadow = true;
+  courseGroup.add(sand);
+
+  for (let i = 0; i < 5; i += 1) {
+    const rake = new THREE.Mesh(
+      new THREE.BoxGeometry(ellipse.rx * SCALE * 0.75, 0.18, 0.55),
+      createMaterial(0xb79a5e, 1),
+    );
+    const offset = (i - 2) * (ellipse.ry * SCALE * 0.18);
+    rake.position.set(sandPos.x, sandPos.y + 0.8, sandPos.z + offset);
+    rake.rotation.y = -ellipse.angle;
+    rake.receiveShadow = true;
+    courseGroup.add(rake);
+  }
+}
+
+function addWater(ellipse) {
+  const waterMaterial = new THREE.MeshPhysicalMaterial({
+    color: 0x2f91b2,
+    roughness: 0.18,
+    metalness: 0,
+    transmission: 0.15,
+    transparent: true,
+    opacity: 0.82,
+    clearcoat: 0.8,
+    clearcoatRoughness: 0.16,
+  });
+  const water = new THREE.Mesh(new THREE.CylinderGeometry(ellipse.rx * SCALE, ellipse.rx * SCALE, 0.7, 96), waterMaterial);
+  const pos = world(ellipse, SURFACE_Y - 0.4);
+  water.position.set(pos.x, pos.y, pos.z);
+  water.scale.z = ellipse.ry / ellipse.rx;
+  water.rotation.y = -ellipse.angle;
+  water.receiveShadow = true;
+  courseGroup.add(water);
+  waterMeshes.push(water);
+
+  const highlightMaterial = new THREE.MeshBasicMaterial({
+    color: 0xbfeeff,
+    transparent: true,
+    opacity: 0.28,
+    depthWrite: false,
+  });
+  for (let i = 0; i < 4; i += 1) {
+    const ripple = new THREE.Mesh(new THREE.TorusGeometry(ellipse.rx * SCALE * (0.28 + i * 0.13), 0.65, 8, 80), highlightMaterial.clone());
+    ripple.position.set(pos.x + (i - 1.5) * 8, pos.y + 1.2 + i * 0.08, pos.z + (i % 2 ? 8 : -6));
+    ripple.rotation.x = Math.PI / 2;
+    ripple.rotation.z = -ellipse.angle + i * 0.32;
+    ripple.scale.y = ellipse.ry / ellipse.rx;
+    courseGroup.add(ripple);
+    waterMeshes.push(ripple);
+  }
 }
 
 function addCupAndPin() {
@@ -948,10 +1035,10 @@ function finishHole() {
 
 function ballHeight() {
   const terrain = terrainAt(ball);
-  if (terrain === "sand") return 6 + BALL_WORLD_RADIUS;
-  if (terrain === "green") return GREEN_Y + 2 + BALL_WORLD_RADIUS;
-  if (terrain === "fairway") return SURFACE_Y + 2 + BALL_WORLD_RADIUS;
-  return 2 + BALL_WORLD_RADIUS;
+  if (terrain === "sand") return SURFACE_Y - 0.5 + BALL_WORLD_RADIUS;
+  if (terrain === "green") return GREEN_Y + 0.8 + BALL_WORLD_RADIUS;
+  if (terrain === "fairway") return SURFACE_Y + 0.8 + BALL_WORLD_RADIUS;
+  return 1.2 + BALL_WORLD_RADIUS;
 }
 
 function updateBallMesh() {
@@ -992,6 +1079,14 @@ function draw() {
 
 function renderLoop() {
   renderLoopId = requestAnimationFrame(renderLoop);
+  const t = performance.now() * 0.001;
+  waterMeshes.forEach((mesh, index) => {
+    mesh.position.y += Math.sin(t * 1.6 + index) * 0.006;
+    mesh.rotation.z += 0.0008 * (index % 2 === 0 ? 1 : -1);
+    if (mesh.material && "opacity" in mesh.material && index > 0) {
+      mesh.material.opacity = 0.18 + Math.sin(t * 1.3 + index) * 0.08;
+    }
+  });
   draw();
 }
 
